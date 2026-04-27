@@ -38,6 +38,10 @@ ARG TARGETARCH
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com \
     TZ=Asia/Shanghai \
     DOCKER_CONTAINER=true
 
@@ -80,9 +84,9 @@ RUN mkdir -p /app/logs /app/data /app/config /var/log/supervisor && \
 # 把包源码与 pyproject.toml 一起作为依赖层 — 这两块变才会重装。
 COPY pyproject.toml README.md ./
 COPY tradingagents ./tradingagents
-RUN pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple && \
-    pip install --prefer-binary . -i https://pypi.tuna.tsinghua.edu.cn/simple && \
-    pip install --prefer-binary pdfkit -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install --upgrade pip && \
+    pip install --prefer-binary . && \
+    pip install --prefer-binary pdfkit
 
 # ---- 其余后端代码（频繁变动，放在依赖层之后） ----
 COPY app ./app
