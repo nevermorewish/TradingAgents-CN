@@ -1,5 +1,11 @@
 """
 DeepSeek LLM适配器，支持Token使用统计
+
+同时支持 DeepSeek V4 系列的 Thinking Mode（思考模式）：
+- 自动启用 extra_body={"thinking": {"type": "enabled"}}
+- 工具调用多轮时，按官方要求把 assistant 的 reasoning_content 回传给 API
+- 屏蔽 thinking 模式不支持的采样参数 (temperature/top_p/presence/frequency)
+参考: https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
 """
 
 import os
@@ -9,6 +15,15 @@ from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, System
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_openai import ChatOpenAI
 from langchain_core.callbacks import CallbackManagerForLLMRun
+
+# Thinking 模式下被 DeepSeek API 拒绝的采样参数
+_THINKING_FORBIDDEN_PARAMS = ("temperature", "top_p", "presence_penalty", "frequency_penalty")
+
+
+def _is_thinking_model(model: Optional[str]) -> bool:
+    """识别需要走 thinking 模式回传 reasoning_content 的 DeepSeek 模型。"""
+    name = (model or "").lower()
+    return name.startswith("deepseek-v4")
 
 # 导入统一日志系统
 from tradingagents.utils.logging_init import setup_llm_logging
@@ -91,7 +106,21 @@ class ChatDeepSeek(ChatOpenAI):
                     "DeepSeek API密钥未找到。请在 Web 界面配置 API Key "
                     "(设置 -> 大模型厂家) 或设置 DEEPSEEK_API_KEY 环境变量。"
                 )
-        
+
+        # 检测是否需要启用 Thinking Mode（V4 系列）
+        thinking_on = _is_thinking_model(model)
+        if thinking_on:
+            extra_body = dict(kwargs.pop("extra_body", None) or {})
+            extra_body.setdefault("thinking", {"type": "enabled"})
+            kwargs["extra_body"] = extra_body
+            kwargs.setdefault("reasoning_effort", "high")
+            # Thinking 模式不接受这些采样参数，传了会 400
+            temperature = None
+            for k in _THINKING_FORBIDDEN_PARAMS:
+                if k != "temperature":
+                    kwargs.pop(k, None)
+            logger.info(f"🧠 [DeepSeek初始化] {model} 启用 thinking 模式 (reasoning_effort={kwargs.get('reasoning_effort')})")
+
         # 初始化父类
         super().__init__(
             model=model,
@@ -101,9 +130,89 @@ class ChatDeepSeek(ChatOpenAI):
             max_tokens=max_tokens,
             **kwargs
         )
-        
+
         self.model_name = model
-        
+
+    # ---------------- Thinking Mode 兼容层 ----------------
+
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        """
+        覆写：在请求体里注入 reasoning_content，并剔除 thinking 模式不支持的采样参数。
+
+        DeepSeek 官方规则：
+        - 上一轮 assistant 若执行了 tool_calls，其 reasoning_content 必须随历史回传
+          否则 400 ('reasoning_content in the thinking mode must be passed back')
+        - 没有 tool_calls 的场景，回传也会被服务端忽略 — 因此我们无条件回传，更鲁棒
+        """
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+
+        if not _is_thinking_model(getattr(self, "model_name", None)):
+            return payload
+
+        # 兜底剔除采样参数（防止上层 with_config 之类又塞回来）
+        for k in _THINKING_FORBIDDEN_PARAMS:
+            payload.pop(k, None)
+
+        # 把入参解析回 BaseMessage 列表，与 payload['messages'] 顺序对齐
+        if hasattr(input_, "to_messages"):
+            src_msgs = input_.to_messages()
+        elif isinstance(input_, list):
+            src_msgs = [m for m in input_ if isinstance(m, BaseMessage)]
+        else:
+            src_msgs = []
+
+        api_msgs = payload.get("messages") or []
+        src_iter = iter(src_msgs)
+        for api_msg in api_msgs:
+            if api_msg.get("role") != "assistant":
+                continue
+            src_msg = None
+            for cand in src_iter:
+                if isinstance(cand, AIMessage):
+                    src_msg = cand
+                    break
+            if src_msg is None:
+                break
+            rc = (src_msg.additional_kwargs or {}).get("reasoning_content")
+            if rc and "reasoning_content" not in api_msg:
+                api_msg["reasoning_content"] = rc
+
+        return payload
+
+    def _create_chat_result(self, response, generation_info=None):
+        """
+        覆写：把响应里的 reasoning_content 收进 AIMessage.additional_kwargs，
+        以便下一轮请求时通过 _get_request_payload 回传。
+        """
+        result = super()._create_chat_result(response, generation_info)
+
+        if not _is_thinking_model(getattr(self, "model_name", None)):
+            return result
+
+        try:
+            choices = response.choices if hasattr(response, "choices") else (response or {}).get("choices", [])
+        except Exception:
+            return result
+
+        for i, choice in enumerate(choices or []):
+            if i >= len(result.generations):
+                break
+            try:
+                msg = choice.message if hasattr(choice, "message") else choice.get("message", {})
+                if isinstance(msg, dict):
+                    rc = msg.get("reasoning_content")
+                else:
+                    rc = getattr(msg, "reasoning_content", None)
+            except Exception:
+                rc = None
+            if not rc:
+                continue
+            gen_msg = result.generations[i].message
+            if isinstance(gen_msg, AIMessage):
+                gen_msg.additional_kwargs["reasoning_content"] = rc
+
+        return result
+
     def _generate(
         self,
         messages: List[BaseMessage],

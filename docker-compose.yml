@@ -1,108 +1,26 @@
-version: '3.8'
-
-# TradingAgents-CN v1.0.0-preview Docker Compose配置
-# 支持前后端分离部署
+# TradingAgents-CN Docker Compose 配置（单镜像版）
+# 部署模式：前后端打到同一个镜像，宿主机宝塔 nginx 做反向代理 + SSL
+# 适用：阿里云 ACR 一条构建规则推一个镜像，再下发到 ACK / ACI / ECS+compose
+#
+# 端口策略（仅绑定 127.0.0.1，外网必须经宝塔 nginx）：
+#   app  -> 127.0.0.1:8081:80   （容器内 nginx 同时托管 SPA 与 /api/）
+#
+# 启动：docker compose up -d
+# 含管理界面：docker compose --profile management up -d
+# 宝塔 nginx vhost 把所有请求（/ 和 /api/）统一代理到 127.0.0.1:8081 即可
 
 services:
-  # FastAPI 后端服务
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    image: tradingagents-backend:v1.0.0-preview
-    container_name: tradingagents-backend
-    ports:
-      - "8000:8000"
-    volumes:
-      # 日志目录映射
-      - ./logs:/app/logs
-      # 配置目录映射
-      - ./config:/app/config
-      # 数据目录映射
-      - ./data:/app/data
-    env_file:
-      - .env
-    environment:
-      PYTHONUNBUFFERED: 1
-      PYTHONDONTWRITEBYTECODE: 1
-      TZ: "Asia/Shanghai"
-      # 日志配置
-      TRADINGAGENTS_LOG_LEVEL: "INFO"
-      TRADINGAGENTS_LOG_DIR: "/app/logs"
-      TRADINGAGENTS_LOG_FILE: "/app/logs/tradingagents.log"
-      # Docker专用数据库配置
-      TRADINGAGENTS_MONGODB_URL: mongodb://admin:tradingagents123@mongodb:27017/tradingagents?authSource=admin
-      TRADINGAGENTS_REDIS_URL: redis://:tradingagents123@redis:6379
-      TRADINGAGENTS_CACHE_TYPE: redis
-      # Docker环境标识
-      DOCKER_CONTAINER: "true"
-      # API配置
-      API_HOST: "0.0.0.0"
-      API_PORT: "8000"
-      # CORS配置
-      CORS_ORIGINS: "http://localhost:3000,http://localhost:8080,http://localhost:5173"
-    depends_on:
-      mongodb:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - tradingagents-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100m"
-        max-file: "3"
-
-  # Vue 3 前端服务
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    image: tradingagents-frontend:v1.0.0-preview
-    container_name: tradingagents-frontend
-    ports:
-      - "3000:80"
-    environment:
-      TZ: "Asia/Shanghai"
-      # 后端API地址
-      VITE_API_BASE_URL: "http://localhost:8000"
-    depends_on:
-      backend:
-        condition: service_healthy
-    networks:
-      - tradingagents-network
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100m"
-        max-file: "3"
-
-  # MongoDB 数据库服务
+  # ===== MongoDB =====
   mongodb:
     image: mongo:4.4
     container_name: tradingagents-mongodb
     restart: unless-stopped
-    ports:
-      - "27017:27017"
+    expose:
+      - "27017"
     environment:
       MONGO_INITDB_ROOT_USERNAME: admin
       MONGO_INITDB_ROOT_PASSWORD: tradingagents123
-      MONGO_INITDB_DATABASE: tradingagents
+      MONGO_INITDB_DATABASE: tradingagentscn
       TZ: "Asia/Shanghai"
     volumes:
       - mongodb_data:/data/db
@@ -121,13 +39,13 @@ services:
         max-size: "50m"
         max-file: "2"
 
-  # Redis 缓存服务
+  # ===== Redis =====
   redis:
     image: redis:7-alpine
     container_name: tradingagents-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    expose:
+      - "6379"
     environment:
       TZ: "Asia/Shanghai"
     command: redis-server --appendonly yes --requirepass tradingagents123
@@ -136,7 +54,7 @@ services:
     networks:
       - tradingagents-network
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a tradingagents123 --no-auth-warning ping | grep PONG"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -147,13 +65,99 @@ services:
         max-size: "50m"
         max-file: "2"
 
-  # Redis Commander 管理界面（可选）
+  # ===== 应用（FastAPI + Vue 静态，nginx 反代 + supervisord 同容器） =====
+  app:
+    image: ${APP_IMAGE:-registry.cn-hangzhou.aliyuncs.com/your-namespace/tradingagents:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tradingagents-app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:80"
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      TZ: "Asia/Shanghai"
+      DOCKER_CONTAINER: "true"
+      # 日志
+      TRADINGAGENTS_LOG_LEVEL: "INFO"
+      TRADINGAGENTS_LOG_DIR: "/app/logs"
+      TRADINGAGENTS_LOG_FILE: "/app/logs/tradingagents.log"
+      # MongoDB（统一数据库名 tradingagentscn）
+      MONGODB_HOST: "mongodb"
+      MONGODB_PORT: "27017"
+      MONGODB_USERNAME: "admin"
+      MONGODB_PASSWORD: "tradingagents123"
+      MONGODB_DATABASE: "tradingagentscn"
+      MONGODB_AUTH_SOURCE: "admin"
+      MONGODB_URL: "mongodb://admin:tradingagents123@mongodb:27017/tradingagentscn?authSource=admin"
+      MONGODB_CONNECTION_STRING: "mongodb://admin:tradingagents123@mongodb:27017/tradingagentscn?authSource=admin"
+      MONGODB_DATABASE_NAME: "tradingagentscn"
+      # Redis
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: "tradingagents123"
+      REDIS_URL: "redis://:tradingagents123@redis:6379/0"
+      # API
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      # CORS（同容器 nginx 已同源，留 *）
+      CORS_ORIGINS: "*"
+      # 显式覆盖镜像内占位符（由 .env 注入）
+      JWT_SECRET: "${JWT_SECRET}"
+      CSRF_SECRET: "${CSRF_SECRET}"
+      DASHSCOPE_API_KEY: "${DASHSCOPE_API_KEY:-}"
+      DASHSCOPE_ENABLED: "${DASHSCOPE_ENABLED:-false}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      DEEPSEEK_ENABLED: "${DEEPSEEK_ENABLED:-false}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_ENABLED: "${OPENAI_ENABLED:-false}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      GOOGLE_ENABLED: "${GOOGLE_ENABLED:-false}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      ANTHROPIC_ENABLED: "${ANTHROPIC_ENABLED:-false}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      OPENROUTER_ENABLED: "${OPENROUTER_ENABLED:-false}"
+      AIHUBMIX_API_KEY: "${AIHUBMIX_API_KEY:-}"
+      AIHUBMIX_ENABLED: "${AIHUBMIX_ENABLED:-false}"
+      TUSHARE_TOKEN: "${TUSHARE_TOKEN:-}"
+      TUSHARE_ENABLED: "${TUSHARE_ENABLED:-false}"
+      AKSHARE_ENABLED: "${AKSHARE_ENABLED:-true}"
+      BAOSTOCK_ENABLED: "${BAOSTOCK_ENABLED:-true}"
+      FINNHUB_API_KEY: "${FINNHUB_API_KEY:-}"
+      FINNHUB_ENABLED: "${FINNHUB_ENABLED:-false}"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - tradingagents-network
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  # ===== 管理面板（可选，--profile management） =====
   redis-commander:
     image: ghcr.io/joeferner/redis-commander:latest
     container_name: tradingagents-redis-commander
     restart: unless-stopped
     ports:
-      - "8081:8081"
+      - "127.0.0.1:8083:8081"
     environment:
       - REDIS_HOSTS=local:redis:6379:0:tradingagents123
     networks:
@@ -161,22 +165,15 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8081"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
     profiles:
       - management
 
-  # Mongo Express 管理界面（可选）
   mongo-express:
     image: mongo-express:latest
     container_name: tradingagents-mongo-express
     restart: unless-stopped
     ports:
-      - "8082:8081"
+      - "127.0.0.1:8082:8081"
     environment:
       ME_CONFIG_MONGODB_ADMINUSERNAME: admin
       ME_CONFIG_MONGODB_ADMINPASSWORD: tradingagents123
@@ -191,7 +188,6 @@ services:
     profiles:
       - management
 
-# 数据卷定义
 volumes:
   mongodb_data:
     driver: local
@@ -200,9 +196,7 @@ volumes:
     driver: local
     name: tradingagents_redis_data
 
-# 网络定义
 networks:
   tradingagents-network:
     driver: bridge
     name: tradingagents-network
-
