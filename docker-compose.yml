@@ -67,7 +67,7 @@ services:
 
   # ===== 应用（FastAPI + Vue 静态，nginx 反代 + supervisord 同容器） =====
   app:
-    image: ${APP_IMAGE:-registry.cn-hangzhou.aliyuncs.com/your-namespace/tradingagents:latest}
+    image: ${APP_IMAGE:-crpi-dzjyl2rfnlfugj1m.cn-shanghai.personal.cr.aliyuncs.com/frogclaw/tradingagents-cn:latest}
     build:
       context: .
       dockerfile: Dockerfile
