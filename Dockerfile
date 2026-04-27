@@ -75,14 +75,17 @@ RUN mkdir -p /app/logs /app/data /app/config /var/log/supervisor && \
     rm -f /etc/nginx/sites-enabled/default
 
 # ---- Python 依赖 ----
+# pyproject.toml 里 setuptools.packages.find = ["tradingagents*"]，
+# 所以 pip install . 需要先看到 tradingagents/ 目录。
+# 把包源码与 pyproject.toml 一起作为依赖层 — 这两块变才会重装。
 COPY pyproject.toml README.md ./
+COPY tradingagents ./tradingagents
 RUN pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple && \
     pip install --prefer-binary . -i https://pypi.tuna.tsinghua.edu.cn/simple && \
     pip install --prefer-binary pdfkit -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# ---- 后端代码 ----
+# ---- 其余后端代码（频繁变动，放在依赖层之后） ----
 COPY app ./app
-COPY tradingagents ./tradingagents
 COPY config ./config
 COPY scripts ./scripts
 COPY docs ./docs
