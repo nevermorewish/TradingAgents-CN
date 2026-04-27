@@ -4,14 +4,40 @@ from typing import Any, Optional
 from langchain_openai import ChatOpenAI
 
 from .base_client import BaseLLMClient, normalize_content
+from .thinking_mode import (
+    apply_thinking_init_kwargs,
+    attach_reasoning_content_to_result,
+    inject_reasoning_content_into_payload,
+    is_thinking_model,
+)
 from .validators import validate_model
 
 
 class NormalizedChatOpenAI(ChatOpenAI):
-    """ChatOpenAI wrapper that normalizes typed content blocks to text."""
+    """ChatOpenAI wrapper that normalizes typed content blocks to text.
+
+    同时为 DeepSeek V4 系列等 thinking 模式模型提供 reasoning_content
+    回传支持，避免在多轮 tool_call 场景下被 API 拒绝（400）。
+    """
+
+    def __init__(self, **kwargs):
+        apply_thinking_init_kwargs(kwargs.get("model"), kwargs)
+        super().__init__(**kwargs)
 
     def invoke(self, input, config=None, **kwargs):
         return normalize_content(super().invoke(input, config, **kwargs))
+
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        if not is_thinking_model(getattr(self, "model_name", None)):
+            return payload
+        return inject_reasoning_content_into_payload(payload, input_)
+
+    def _create_chat_result(self, response, generation_info=None):
+        result = super()._create_chat_result(response, generation_info)
+        if not is_thinking_model(getattr(self, "model_name", None)):
+            return result
+        return attach_reasoning_content_to_result(response, result)
 
 
 _PASSTHROUGH_KWARGS = (

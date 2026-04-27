@@ -112,6 +112,10 @@ services:
       # 显式覆盖镜像内占位符（由 .env 注入）
       JWT_SECRET: "${JWT_SECRET}"
       CSRF_SECRET: "${CSRF_SECRET}"
+      # 默认管理员：首次启动且系统内尚无管理员时自动创建（密码留空则跳过）
+      DEFAULT_ADMIN_USERNAME: "${DEFAULT_ADMIN_USERNAME:-admin}"
+      DEFAULT_ADMIN_PASSWORD: "${DEFAULT_ADMIN_PASSWORD:-}"
+      DEFAULT_ADMIN_EMAIL: "${DEFAULT_ADMIN_EMAIL:-admin@tradingagents.cn}"
       DASHSCOPE_API_KEY: "${DASHSCOPE_API_KEY:-}"
       DASHSCOPE_ENABLED: "${DASHSCOPE_ENABLED:-false}"
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"

@@ -125,6 +125,11 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=60)
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=30)
 
+    # 默认管理员（容器首次启动、且系统内尚无管理员时自动创建；密码留空则跳过）
+    DEFAULT_ADMIN_USERNAME: str = Field(default="admin")
+    DEFAULT_ADMIN_PASSWORD: str = Field(default="")
+    DEFAULT_ADMIN_EMAIL: str = Field(default="admin@tradingagents.cn")
+
     # 队列配置
     QUEUE_MAX_SIZE: int = Field(default=10000)
     QUEUE_VISIBILITY_TIMEOUT: int = Field(default=300)  # 5分钟

@@ -229,6 +229,13 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    # 默认管理员：如系统内尚无管理员，按 DEFAULT_ADMIN_* 环境变量自动创建
+    try:
+        from app.core.bootstrap import ensure_default_admin
+        await ensure_default_admin()
+    except Exception as e:
+        logger.warning(f"⚠️  默认管理员引导失败（不影响启动）: {e}")
+
     #  配置桥接：将统一配置写入环境变量，供 TradingAgents 核心库使用
     try:
         from app.core.config_bridge import bridge_config_to_env
